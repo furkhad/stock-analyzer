@@ -2,159 +2,107 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import plotly.graph_objects as go
-from datetime import datetime, timedelta
+import requests
 
-# --- 1. APP CONFIGURATION ---
-st.set_page_config(page_title="Global Stock Analyzer", layout="wide")
+# --- 1. CONFIGURATION ---
+st.set_page_config(page_title="Global Stock Search", layout="wide")
 
-# --- 2. THE "DATABASE" OF POPULAR STOCKS ---
-# This serves as a quick starter list for users.
-COMMON_STOCKS = {
-    "--- US Tech ---": "Skip", # Header
-    "Apple (AAPL)": "AAPL",
-    "Microsoft (MSFT)": "MSFT", 
-    "Google (GOOGL)": "GOOGL",
-    "Amazon (AMZN)": "AMZN",
-    "Tesla (TSLA)": "TSLA",
-    "NVIDIA (NVDA)": "NVDA",
-    
-    "--- Indian Market (NSE) ---": "Skip",
-    "Reliance Industries (RELIANCE.NS)": "RELIANCE.NS",
-    "Tata Consultancy Svcs (TCS.NS)": "TCS.NS",
-    "HDFC Bank (HDFCBANK.NS)": "HDFCBANK.NS",
-    "Infosys (INFY.NS)": "INFY.NS",
-    "Tata Motors (TATAMOTORS.NS)": "TATAMOTORS.NS",
-    "Zomato (ZOMATO.NS)": "ZOMATO.NS",
-    "State Bank of India (SBIN.NS)": "SBIN.NS",
-
-    "--- Crypto ---": "Skip",
-    "Bitcoin (BTC-USD)": "BTC-USD",
-    "Ethereum (ETH-USD)": "ETH-USD",
-    "Solana (SOL-USD)": "SOL-USD",
-    
-    "--- Indices ---": "Skip",
-    "S&P 500 (^GSPC)": "^GSPC",
-    "Nifty 50 (^NSEI)": "^NSEI",
-}
+# --- 2. THE "SEARCH THE WORLD" FUNCTION ---
+# This hits Yahoo Finance's hidden API to find ANY ticker globally
+def search_yahoo(query):
+    try:
+        # The API endpoint Yahoo uses for its own search bar
+        url = f"https://query2.finance.yahoo.com/v1/finance/search?q={query}&quotesCount=10&newsCount=0"
+        
+        # We need a fake "User-Agent" so Yahoo doesn't block us
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+        
+        response = requests.get(url, headers=headers)
+        data = response.json()
+        
+        # Extract the list of companies found
+        results = {}
+        if 'quotes' in data:
+            for quote in data['quotes']:
+                # We only want Stocks and ETFs (not news articles)
+                if 'symbol' in quote and 'shortname' in quote:
+                    symbol = quote['symbol']
+                    name = quote['shortname']
+                    exch = quote.get('exchange', 'Unknown')
+                    label = f"{name} ({symbol}) - {exch}"
+                    results[label] = symbol
+        return results
+    except Exception as e:
+        return {}
 
 # --- 3. SIDEBAR CONTROLS ---
-st.sidebar.header("⚙️ Configuration")
+st.sidebar.header("🔍 Find a Stock")
 
-# Input Method Selection
-input_method = st.sidebar.radio("Search Method:", ["Select from List", "Enter Custom Ticker"])
+# SEARCH BOX
+search_query = st.sidebar.text_input("Type Company Name (e.g., Toyota, Shell, Tencent)", "Apple")
 
-ticker = "AAPL" # Default
+# SEARCH LOGIC
+ticker = "AAPL" # Fallback default
 stock_name = "Apple Inc."
 
-if input_method == "Select from List":
-    selected_option = st.sidebar.selectbox("Choose a Stock:", list(COMMON_STOCKS.keys()))
-    # Logic to handle headers (if user clicks a header, default to first real stock)
-    if COMMON_STOCKS[selected_option] == "Skip":
-        st.sidebar.warning("Please select a valid stock, not a category header.")
-        ticker = "AAPL"
+if search_query:
+    # 1. Search the world for this string
+    search_results = search_yahoo(search_query)
+    
+    if search_results:
+        # 2. Let user choose the correct one from the dropdown
+        selected_label = st.sidebar.selectbox("Select Result:", list(search_results.keys()))
+        ticker = search_results[selected_label]
+        stock_name = selected_label
     else:
-        ticker = COMMON_STOCKS[selected_option]
-        stock_name = selected_option
-else:
-    # Custom Manual Entry
-    raw_ticker = st.sidebar.text_input("Enter Ticker Symbol (e.g. MSFT, RELIANCE.NS):", "AAPL")
-    ticker = raw_ticker.upper().strip()
-    stock_name = ticker
+        st.sidebar.warning("No results found. Try a different name.")
 
-# Date Selection
-col1, col2 = st.sidebar.columns(2)
-with col1:
-    start_date = st.date_input("Start Date", datetime.today() - timedelta(days=365))
-with col2:
-    end_date = st.date_input("End Date", datetime.today())
+# DATE CONTROLS
+st.sidebar.markdown("---")
+start_date = st.sidebar.date_input("Start Date", pd.to_datetime("2023-01-01"))
+end_date = st.sidebar.date_input("End Date", pd.to_datetime("today"))
 
-# --- 4. DATA LOADING FUNCTION (CACHED) ---
+# --- 4. DATA LOADING & ANALYSIS (Same as before) ---
 @st.cache_data
 def load_data(symbol, start, end):
     try:
-        # Download data
         df = yf.download(symbol, start=start, end=end)
-        
-        # Check if data is empty (wrong ticker)
-        if df.empty:
-            return None
-        
-        # Reset index so 'Date' becomes a column
+        if df.empty: return None
         df.reset_index(inplace=True)
-        
-        # Flatten MultiIndex columns if they exist (common yfinance issue)
+        # Fix for multi-level columns if they appear
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.droplevel(1)
-            
         return df
-    except Exception as e:
-        print(f"Error: {e}")
+    except:
         return None
 
-# --- 5. MAIN DASHBOARD LOGIC ---
-st.title(f"📊 {stock_name} Analysis")
+# --- MAIN PAGE ---
+st.title(f"Analysis: {stock_name}")
 
-# Load the data
-data_state = st.text("Fetching data from Yahoo Finance...")
+data_load_state = st.text(f"Fetching data for {ticker}...")
 df = load_data(ticker, start_date, end_date)
-data_state.empty() # Clear loading text
+data_load_state.empty()
 
 if df is not None:
-    # --- CALCULATIONS ---
-    # Moving Averages
+    # Indicators
     df['SMA50'] = df['Close'].rolling(window=50).mean()
     df['SMA200'] = df['Close'].rolling(window=200).mean()
     
-    # Calculate simple return metrics
-    current_price = df['Close'].iloc[-1]
-    start_price = df['Close'].iloc[0]
-    pct_change = ((current_price - start_price) / start_price) * 100
-    
-    # --- METRICS ROW ---
-    m1, m2, m3 = st.columns(3)
-    m1.metric("Current Price", f"{current_price:.2f}")
-    m2.metric("Start Price", f"{start_price:.2f}")
-    m3.metric("Change", f"{pct_change:.2f}%", delta=f"{pct_change:.2f}%")
-    
-    # --- PLOTLY CHART ---
-    st.subheader("Price History & Moving Averages")
-    
+    # Chart
     fig = go.Figure()
-
-    # Candlestick
     fig.add_trace(go.Candlestick(
-        x=df['Date'],
-        open=df['Open'], high=df['High'],
-        low=df['Low'], close=df['Close'],
-        name='OHLC'
+        x=df['Date'], open=df['Open'], high=df['High'],
+        low=df['Low'], close=df['Close'], name='Price'
     ))
-
-    # Moving Averages
-    fig.add_trace(go.Scatter(x=df['Date'], y=df['SMA50'], line=dict(color='orange', width=1.5), name='50-Day SMA'))
-    fig.add_trace(go.Scatter(x=df['Date'], y=df['SMA200'], line=dict(color='blue', width=1.5), name='200-Day SMA'))
-
-    fig.update_layout(
-        height=600,
-        xaxis_rangeslider_visible=False,
-        template="plotly_dark", # Looks "Pro"
-        title_text=f"{ticker} Daily Chart",
-        hovermode="x unified"
-    )
+    fig.add_trace(go.Scatter(x=df['Date'], y=df['SMA50'], line=dict(color='orange', width=1), name='SMA 50'))
+    fig.add_trace(go.Scatter(x=df['Date'], y=df['SMA200'], line=dict(color='blue', width=1), name='SMA 200'))
     
+    fig.update_layout(height=600, title=f"{ticker} - {stock_name}", template="plotly_dark", xaxis_rangeslider_visible=False)
     st.plotly_chart(fig, use_container_width=True)
     
-    # --- RAW DATA & DOWNLOAD ---
-    with st.expander("📥 View & Download Raw Data"):
-        st.dataframe(df.sort_values(by="Date", ascending=False).head(10))
-        
-        csv = df.to_csv(index=False).encode('utf-8')
-        st.download_button(
-            label="Download Data as CSV",
-            data=csv,
-            file_name=f"{ticker}_history.csv",
-            mime="text/csv",
-        )
+    # Raw Data
+    with st.expander("View Raw Data"):
+        st.dataframe(df.tail(10))
 
 else:
-    st.error(f"❌ Could not find data for **{ticker}**.")
-    st.info("Tips: \n- For Indian stocks, add `.NS` (e.g., `RELIANCE.NS`). \n- For Crypto, add `-USD` (e.g., `BTC-USD`). \n- For US stocks, just use the symbol (e.g., `AAPL`).")
+    st.error(f"Could not load data for {ticker}. The exchange might be closed or data unavailable.")
