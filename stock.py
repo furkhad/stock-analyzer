@@ -4,235 +4,279 @@ import pandas as pd
 import plotly.graph_objects as go
 import numpy as np
 import requests
+import time
 from textblob import TextBlob
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score
+from sklearn.metrics import accuracy_score, precision_score
+from datetime import timedelta
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="Quant AI Stock Master", layout="wide", page_icon="🧠")
+st.set_page_config(page_title="Quant AI Master v2.0", layout="wide", page_icon="🛡️")
 
-# --- CUSTOM CSS FOR "HACKER" VIBE ---
+# --- CUSTOM STYLING ---
 st.markdown("""
 <style>
     .metric-card {background-color: #0e1117; border: 1px solid #303030; padding: 20px; border-radius: 10px; text-align: center;}
-    .stAlert {background-color: #0e1117; border: 1px solid #303030;}
+    .trust-score-high {color: #00ff41; font-weight: bold;}
+    .trust-score-med {color: #ffa500; font-weight: bold;}
+    .trust-score-low {color: #ff2b2b; font-weight: bold;}
+    .stProgress .st-bo {background-color: #00ff41;}
 </style>
 """, unsafe_allow_html=True)
 
-# --- HELPER FUNCTIONS ---
+# --- ROBUST DATA ENGINE ---
 
-def search_yahoo(query):
-    """Searches for a stock ticker globally."""
+@st.cache_data(ttl=300, show_spinner=False) # Cache for 5 minutes
+def get_stock_data_robust(ticker, period="2y"):
+    """
+    Attempts to download data with retries. 
+    Prevents 'Unable to fetch' errors by trying 3 times.
+    """
+    attempts = 0
+    max_retries = 3
+    while attempts < max_retries:
+        try:
+            df = yf.download(ticker, period=period, progress=False)
+            
+            # Fix for yfinance MultiIndex issue
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.droplevel(1)
+            
+            df.reset_index(inplace=True)
+            
+            if df.empty:
+                raise ValueError("Empty Dataframe")
+                
+            return df
+        except Exception as e:
+            attempts += 1
+            time.sleep(1) # Wait 1 second before retry
+            
+    return pd.DataFrame() # Return empty if all fails
+
+def search_yahoo_robust(query):
+    """Safely searches for a ticker."""
     try:
         url = f"https://query2.finance.yahoo.com/v1/finance/search?q={query}&quotesCount=5&newsCount=0"
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/91.0.4472.124 Safari/537.36'}
-        response = requests.get(url, headers=headers)
+        response = requests.get(url, headers=headers, timeout=5)
         data = response.json()
         results = {}
         if 'quotes' in data:
             for quote in data['quotes']:
-                if 'symbol' in quote and 'shortname' in quote:
-                    label = f"{quote['shortname']} ({quote['symbol']}) - {quote.get('exchange', 'Unknown')}"
+                if 'symbol' in quote:
+                    name = quote.get('shortname', quote.get('longname', 'Unknown'))
+                    label = f"{name} ({quote['symbol']})"
                     results[label] = quote['symbol']
         return results
     except:
         return {}
 
-def get_news_sentiment(ticker_symbol):
-    """Fetches news and calculates average sentiment (Positive/Negative)."""
-    try:
-        stock = yf.Ticker(ticker_symbol)
-        news = stock.news
-        sentiment_score = 0
-        headlines = []
-        
-        if not news:
-            return 0, []
-            
-        for article in news[:5]: # Analyze last 5 articles
-            title = article.get('title', '')
-            link = article.get('link', '')
-            blob = TextBlob(title)
-            sentiment_score += blob.sentiment.polarity
-            headlines.append((title, link))
-            
-        avg_sentiment = sentiment_score / len(news[:5])
-        return avg_sentiment, headlines
-    except:
-        return 0, []
+# --- ADVANCED MATH & AI ---
 
-def predict_stock_movement(df):
-    """
-    TRAINS AN AI MODEL LIVE.
-    Uses Random Forest to predict if Tomorrow's Close > Today's Close.
-    """
+def add_technical_indicators(df):
+    """Adds professional-grade indicators for the AI to learn from."""
     df = df.copy()
     
-    # 1. Feature Engineering (Creating variables for the AI to study)
-    df['Open-Close'] = df['Open'] - df['Close']
-    df['High-Low'] = df['High'] - df['Low']
+    # 1. Simple Moving Averages
     df['SMA_10'] = df['Close'].rolling(window=10).mean()
     df['SMA_50'] = df['Close'].rolling(window=50).mean()
-    df['RSI'] = compute_rsi(df['Close'])
-    df['Price_Change'] = df['Close'].pct_change()
     
-    df = df.dropna()
-    
-    # 2. Define the Target: 1 if price went UP next day, 0 if DOWN
-    # We shift -1 so 'y' matches the NEXT day's result to TODAY's data
-    X = df[['Open-Close', 'High-Low', 'SMA_10', 'SMA_50', 'RSI', 'Price_Change']]
-    y = np.where(df['Close'].shift(-1) > df['Close'], 1, 0)
-    
-    # Remove the last row (since it has no "tomorrow" yet)
-    X = X[:-1]
-    y = y[:-1]
-    
-    if len(X) < 100:
-        return None, None, 0 # Not enough data
-        
-    # 3. Train the Model
-    split = int(0.8 * len(df))
-    model = RandomForestClassifier(n_estimators=100, min_samples_split=100, random_state=1)
-    model.fit(X.iloc[:split], y[:split]) # Train on past data
-    
-    # 4. Test the Model
-    preds = model.predict(X.iloc[split:])
-    acc = accuracy_score(y[split:], preds)
-    
-    # 5. Predict for TOMORROW using the absolute latest data
-    latest_data = df.iloc[-1:][['Open-Close', 'High-Low', 'SMA_10', 'SMA_50', 'RSI', 'Price_Change']]
-    prediction = model.predict(latest_data)
-    probability = model.predict_proba(latest_data)
-    
-    return prediction[0], probability[0], acc
-
-def compute_rsi(series, period=14):
-    delta = series.diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+    # 2. RSI (Relative Strength Index)
+    delta = df['Close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
     rs = gain / loss
-    return 100 - (100 / (1 + rs))
+    df['RSI'] = 100 - (100 / (1 + rs))
+    
+    # 3. MACD (Moving Average Convergence Divergence)
+    ema12 = df['Close'].ewm(span=12, adjust=False).mean()
+    ema26 = df['Close'].ewm(span=26, adjust=False).mean()
+    df['MACD'] = ema12 - ema26
+    df['MACD_Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
+    
+    # 4. Bollinger Bands (Volatility)
+    df['BB_Middle'] = df['Close'].rolling(window=20).mean()
+    std = df['Close'].rolling(window=20).std()
+    df['BB_Upper'] = df['BB_Middle'] + (std * 2)
+    df['BB_Lower'] = df['BB_Middle'] - (std * 2)
+    
+    # Clean NaN values created by rolling windows
+    df.dropna(inplace=True)
+    return df
 
-# --- SIDEBAR SEARCH ---
-st.sidebar.title("🔍 Deep Search")
-query = st.sidebar.text_input("Search Ticker", "Apple")
-search_results = search_yahoo(query)
+def train_robust_model(df):
+    """
+    Trains a Random Forest model with a 'Confidence Threshold'.
+    """
+    df = add_technical_indicators(df)
+    
+    # Features (X) and Target (y)
+    # We predict if Tomorrow's Close > Today's Close
+    features = ['Open', 'High', 'Low', 'Close', 'Volume', 'SMA_10', 'SMA_50', 'RSI', 'MACD', 'MACD_Signal', 'BB_Upper', 'BB_Lower']
+    
+    # Target: 1 if Up, 0 if Down
+    df['Target'] = (df['Close'].shift(-1) > df['Close']).astype(int)
+    
+    # Remove last row (no target for it)
+    data_model = df[:-1].copy()
+    
+    if len(data_model) < 100:
+        return None, None, 0, 0 # Not enough data
+    
+    X = data_model[features]
+    y = data_model['Target']
+    
+    # Split Data (80% Train, 20% Test)
+    split = int(len(X) * 0.8)
+    X_train, X_test = X.iloc[:split], X.iloc[split:]
+    y_train, y_test = y.iloc[:split], y.iloc[split:]
+    
+    # Initialize Model (More trees = more stable)
+    model = RandomForestClassifier(n_estimators=200, min_samples_split=10, random_state=42)
+    model.fit(X_train, y_train)
+    
+    # Evaluate
+    preds = model.predict(X_test)
+    acc = accuracy_score(y_test, preds)
+    
+    # Prediction for Tomorrow (using the latest available data)
+    last_row = df.iloc[-1:][features]
+    prediction = model.predict(last_row)[0]
+    probabilities = model.predict_proba(last_row)[0] # [prob_down, prob_up]
+    
+    return prediction, probabilities, acc, model
+
+# --- UI LAYOUT ---
+
+# Sidebar
+st.sidebar.title("🔍 Asset Search")
+query = st.sidebar.text_input("Type Company Name", "Apple")
+search_results = search_yahoo_robust(query)
 
 if search_results:
-    ticker_options = list(search_results.keys())
-    selected_label = st.sidebar.selectbox("Select Asset", ticker_options)
-    ticker = search_results[selected_label]
+    ticker_display = st.sidebar.selectbox("Select Stock", list(search_results.keys()))
+    ticker = search_results[ticker_display]
 else:
     ticker = "AAPL"
-    st.sidebar.warning("Ticker not found, defaulting to AAPL")
+    st.sidebar.info("Using default: Apple Inc.")
 
-# --- MAIN DATA LOADING ---
-st.title(f"🧠 AI Quant Analysis: {ticker}")
+# Main Page
+st.title(f"🛡️ Quant AI: {ticker}")
+st.markdown("### reliable. data-driven. automated.")
 
-# Load 2 years of data for the AI
-data = yf.download(ticker, period="2y")
-if isinstance(data.columns, pd.MultiIndex):
-    data.columns = data.columns.droplevel(1)
-data.reset_index(inplace=True)
+# Fetch Data
+with st.spinner(f"Connecting to global exchanges for {ticker}..."):
+    raw_data = get_stock_data_robust(ticker)
 
-if not data.empty:
-    current_price = data['Close'].iloc[-1]
+if not raw_data.empty:
     
-    # --- TABS FOR ANALYSIS ---
-    tab1, tab2, tab3, tab4 = st.tabs(["🔮 AI Prediction", "📊 Deep Technicals", "📰 News & Sentiment", "🏢 Fundamentals"])
-
-    # === TAB 1: AI PREDICTION ===
-    with tab1:
-        st.subheader("🤖 Artificial Intelligence Forecast")
-        st.write("I am training a Random Forest model on the last 2 years of data to find patterns...")
+    # Run AI
+    pred, probs, accuracy, model = train_robust_model(raw_data)
+    
+    # -- DASHBOARD HEADER --
+    col1, col2, col3, col4 = st.columns(4)
+    current_price = raw_data['Close'].iloc[-1]
+    prev_close = raw_data['Close'].iloc[-2]
+    change = current_price - prev_close
+    pct_change = (change / prev_close) * 100
+    
+    col1.metric("Current Price", f"${current_price:.2f}", f"{change:.2f} ({pct_change:.2f}%)")
+    
+    # -- AI DECISION LOGIC --
+    # We only show a signal if confidence is > 60%
+    confidence_up = probs[1] * 100
+    confidence_down = probs[0] * 100
+    
+    decision = "HOLD / NEUTRAL"
+    color = "off"
+    
+    if confidence_up > 60:
+        decision = "BUY SIGNAL 🚀"
+        color = "green"
+    elif confidence_down > 60:
+        decision = "SELL SIGNAL 🔻"
+        color = "red"
         
-        prediction, probability, accuracy = predict_stock_movement(data)
-        
-        if prediction is not None:
-            col1, col2, col3 = st.columns(3)
-            
-            # Prediction Card
-            with col1:
-                st.markdown("### AI Forecast for Tomorrow")
-                if prediction == 1:
-                    st.success("🚀 UP / BULLISH")
-                else:
-                    st.error("🔻 DOWN / BEARISH")
-            
-            # Probability Card
-            with col2:
-                st.markdown("### Confidence")
-                prob_up = probability[1] * 100
-                st.metric("Probability of Rise", f"{prob_up:.1f}%")
-                
-            # Accuracy Card
-            with col3:
-                st.markdown("### Model Accuracy")
-                st.metric("Backtest Score", f"{accuracy*100:.1f}%", help="How often this model was right in the last 6 months")
-
-            if accuracy < 0.5:
-                st.warning("⚠️ Warning: This stock is highly volatile. The AI is struggling to find a clear pattern.")
-            else:
-                st.info("ℹ️ The model has detected a tradable pattern in recent movements.")
+    with col2:
+        st.markdown(f"**AI Recommendation**")
+        if color == "green":
+            st.success(decision)
+        elif color == "red":
+            st.error(decision)
         else:
-            st.error("Not enough historical data to train the AI.")
+            st.warning(decision)
+            
+    with col3:
+        st.metric("AI Confidence", f"{max(confidence_up, confidence_down):.1f}%")
+        
+    with col4:
+        st.metric("Model Reliability", f"{accuracy*100:.1f}%", help="Accuracy on unseen data (last 6 months)")
 
-    # === TAB 2: TECHNICALS ===
-    with tab2:
-        # Calculate Indicators
-        data['SMA50'] = data['Close'].rolling(50).mean()
-        data['SMA200'] = data['Close'].rolling(200).mean()
+    st.divider()
+
+    # -- TABS --
+    tab1, tab2, tab3 = st.tabs(["📊 Deep Analysis", "🧠 AI Logic Explained", "🎓 Beginner's Guide"])
+    
+    with tab1:
+        # Professional Chart with Bollinger Bands
+        df_chart = add_technical_indicators(raw_data)
         
         fig = go.Figure()
-        fig.add_trace(go.Candlestick(x=data['Date'], open=data['Open'], high=data['High'], low=data['Low'], close=data['Close'], name='Price'))
-        fig.add_trace(go.Scatter(x=data['Date'], y=data['SMA50'], line=dict(color='orange', width=1), name='SMA 50'))
-        fig.add_trace(go.Scatter(x=data['Date'], y=data['SMA200'], line=dict(color='blue', width=1), name='SMA 200'))
         
-        fig.update_layout(height=600, template="plotly_dark", title=f"{ticker} Technical Chart")
+        # Candlesticks
+        fig.add_trace(go.Candlestick(x=df_chart['Date'],
+                        open=df_chart['Open'], high=df_chart['High'],
+                        low=df_chart['Low'], close=df_chart['Close'], name='Price'))
+        
+        # Bollinger Bands (Area)
+        fig.add_trace(go.Scatter(x=df_chart['Date'], y=df_chart['BB_Upper'], 
+                                 line=dict(color='rgba(255, 255, 255, 0)'), showlegend=False))
+        fig.add_trace(go.Scatter(x=df_chart['Date'], y=df_chart['BB_Lower'], 
+                                 fill='tonexty', fillcolor='rgba(0, 100, 255, 0.1)', 
+                                 line=dict(color='rgba(255, 255, 255, 0)'), name='Volatility Band'))
+        
+        # Moving Averages
+        fig.add_trace(go.Scatter(x=df_chart['Date'], y=df_chart['SMA_50'], line=dict(color='orange', width=1), name='50-Day Trend'))
+        
+        fig.update_layout(height=600, template="plotly_dark", title="Institutional Grade Chart")
         st.plotly_chart(fig, use_container_width=True)
-
-    # === TAB 3: NEWS & SENTIMENT ===
+        
+    with tab2:
+        st.subheader("Why did the AI make this decision?")
+        
+        # Feature Importance
+        if model:
+            importances = model.feature_importances_
+            feature_names = ['Open', 'High', 'Low', 'Close', 'Volume', 'SMA_10', 'SMA_50', 'RSI', 'MACD', 'MACD_Signal', 'BB_Upper', 'BB_Lower']
+            feat_df = pd.DataFrame({'Feature': feature_names, 'Importance': importances}).sort_values(by='Importance', ascending=False)
+            
+            st.write("The model looked at these factors mainly to decide:")
+            st.bar_chart(feat_df.set_index('Feature'))
+            
+            st.info("""
+            **Interpretation:**
+            * If **Volume** is high, the AI is watching trading activity.
+            * If **RSI** is high, it's checking if the stock is 'Overbought'.
+            * If **SMA** is high, it's looking at the long-term trend.
+            """)
+            
     with tab3:
-        st.subheader("📰 Market Sentiment Analysis")
-        sentiment, headlines = get_news_sentiment(ticker)
+        st.subheader("🎓 Trading for Beginners")
+        st.markdown("""
+        **1. What is the 'AI Confidence'?**
+        Stocks are chaotic. The AI analyzes patterns. If confidence is 50-55%, it's guessing. We only show a BUY signal if it is >60% sure.
         
-        s_col1, s_col2 = st.columns([1, 2])
-        with s_col1:
-            st.metric("Sentiment Score", f"{sentiment:.2f}")
-            if sentiment > 0.1:
-                st.success("The news is generally POSITIVE 😄")
-            elif sentiment < -0.1:
-                st.error("The news is generally NEGATIVE 😡")
-            else:
-                st.warning("The news is NEUTRAL 😐")
+        **2. What is RSI?**
+        * **RSI > 70:** The stock might be too expensive (Overbought). Price might drop.
+        * **RSI < 30:** The stock might be cheap (Oversold). Price might rise.
         
-        with s_col2:
-            st.write("### Latest Headlines")
-            for title, link in headlines:
-                st.markdown(f"• [{title}]({link})")
-
-    # === TAB 4: FUNDAMENTALS ===
-    with tab4:
-        st.subheader("🏢 Company Health (Deep Dive)")
-        try:
-            stock = yf.Ticker(ticker)
-            info = stock.info
-            
-            f1, f2, f3, f4 = st.columns(4)
-            f1.metric("Market Cap", f"${info.get('marketCap', 0):,}")
-            f2.metric("P/E Ratio", info.get('trailingPE', 'N/A'))
-            f3.metric("Revenue Growth", f"{info.get('revenueGrowth', 0)*100:.1f}%")
-            f4.metric("52 Week High", f"${info.get('fiftyTwoWeekHigh', 0)}")
-            
-            st.markdown("### Business Summary")
-            st.write(info.get('longBusinessSummary', 'No summary available.'))
-            
-            st.markdown("### Major Holders")
-            st.dataframe(stock.major_holders)
-            
-        except:
-            st.error("Could not retrieve fundamental data.")
+        **3. What are the Blue Bands (Bollinger)?**
+        These measure volatility. If the bands squeeze tight, a big move (up or down) is often coming soon.
+        
+        **4. Disclaimer**
+        *No algorithm can predict the future 100%. Always use this as a helper, not a master. Never invest money you cannot afford to lose.*
+        """)
 
 else:
-    st.error("Data could not be loaded. Please check the ticker.")
+    st.error("⚠️ Massive Data Failure. The stock exchange is not responding. Please try a different ticker or wait 60 seconds.")
