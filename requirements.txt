@@ -3,5 +3,6 @@ yfinance
 pandas
 plotly
 requests
-scikit-learn 
+scikit-learn
 textblob
+numpy
